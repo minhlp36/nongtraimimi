@@ -1,0 +1,2236 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <title>Mini Farm - Nạp Rút Mã 1 Lần</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, runTransaction, serverTimestamp, collection, query, where, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+        // Your web app's Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyDlLed-Ay9MlRAQRer-yBATdy_DeNS0kTA", // Thay thế bằng API Key của bạn
+            authDomain: "nong-trai-mmo-6688.firebaseapp.com",
+            projectId: "nong-trai-mmo-6688",
+            storageBucket: "nong-trai-mmo-6688.firebasestorage.app",
+            messagingSenderId: "1095439702021",
+            appId: "1:1095439702021:web:31d5dbe12e446716cce46c",
+            measurementId: "G-4B5L11DLS3"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        console.log("Firebase initialized!"); // Debugging Firebase initialization
+
+        // Global variables to store user data and game state
+        // IMPORTANT: These will be loaded/reset on each user login
+        let userId = null;
+        let userEmail = null;
+        let gameId = null; // Unique 7-8 digit game ID
+        let playerName = "Guest";
+        const farmSize = 16; // Total number of crop farm tiles
+        const maxAnimalSpots = 4; // Max number of animal spots
+        let silver = 0, gold = 0, xp = 0, level = 1; // Default to 0, will be loaded or initialized
+        let unlockedCropTiles = [0]; // Default: first crop tile unlocked
+        let unlockedAnimalSpots = [0]; // Default: first animal spot unlocked
+        let inventory = {};
+        let nextCropTileIndex = 1; //
+        let nextAnimalSpotIndex = 1; //
+        let friends = []; // Keeping this for now, even if UI is removed, for potential future use or friend requests
+        let outgoingRequests = [];
+        let incomingRequests = [];
+        let plantedCrops = {};
+        let animals = {}; // New: To store placed animals in specific spots
+
+        // Seed data definitions (Now with a 'category' property)
+        const seedData = {
+            cabbage: { emoji:'🥬', name:'Cải', category: 'seed', cost:1000, profit:1200, time:45000, level:1, xp:50 },
+            carrot:  { emoji:'🥕', name:'Cà rốt', category: 'seed', cost:3000, profit:3700, time:90000, level:5, xp:80 },
+            corn:    { emoji:'🌽', name:'Ngô', category: 'seed', cost:5000, profit:6200, time:135000, level:10, xp:120 },
+            tomato:  { emoji:'🍅', name:'Cà chua', category: 'seed', cost:7000, profit:8700, time:180000, level:20, xp:200 },
+            melon:   { emoji:'🍈', name:'Dưa', category: 'seed', cost:10000, profit:12400, time:225000, level:30, xp:300 },
+            grape:   { emoji:'🍇', name:'Nho', category: 'seed', cost:15000, profit:18500, time:260000, level:40, xp:400 }
+        };
+
+        // Animal data definitions (UPDATED)
+        const animalData = {
+            chicken: { emoji:'🐔', name:'Gà', category: 'animal', cost_gold:90000, product:'Trứng', productEmoji:'🥚', productValue: 500, productInterval: 3600000, maxProducts: 5, level:5, xp:150 }, // 1 hour
+            cow:     { emoji:'🐄', name:'Bò', category: 'animal', cost_gold:180000, product:'Sữa', productEmoji:'🥛', productValue: 1500, productInterval: 7200000, maxProducts: 5, level:15, xp:300 } // 2 hours
+        };
+
+        // Special items (New Category)
+        const specialItemsData = {
+            land_tile: { emoji:'🏞️', name:'Ô đất', category: 'special', type: 'land', level:1, maxCount: farmSize }, // Land tile for crops
+            animal_spot: { emoji:'🏜️', name:'Ô chăn nuôi', category: 'special', type: 'animal_spot', level:1 } // New: Animal spot
+        };
+        // Define costs for animal spots
+        const animalSpotCosts = {
+            1: { silver: 0, level: 1 }, // First spot is free and unlocked by default
+            2: { silver: 180000, level: 25 }, //
+            3: { silver: 360000, level: 30 }, //
+            4: { silver: 720000, level: 40 }  //
+        };
+
+
+        // Combine all shop items into one object for easier iteration
+        const shopItemsData = { ...seedData, ...animalData, ...specialItemsData };
+
+
+        // Initialize inventory structure for all shop items
+        for (let k in shopItemsData) inventory[k] = 0; // Ensures all shop items keys exist in inventory
+
+        // DOM Elements for convenience
+        const authScreen = document.getElementById("authScreen");
+        const emailInput = document.getElementById("email");
+        const passwordInput = document.getElementById("password");
+        const authMessage = document.getElementById("authMessage"); // New element for auth messages
+
+        // Removed topPlayerName from topBar
+        const silverSpan = document.getElementById("silver");
+        const goldSpan = document.getElementById("gold");
+
+        const mainContent = document.getElementById("mainContent");
+        const farmView = document.getElementById("farmView");
+        const inventoryView = document.getElementById("inventoryView");
+        const gameZoneView = document.getElementById("gameZoneView"); // Renamed from friendsView
+        const accountView = document.getElementById("accountView");
+        const shopView = document.getElementById("shopView");
+        const codeView = document.getElementById("codeView");
+
+        // Farm View specific elements (UPDATED FOR TABS)
+        const farmCategories = document.getElementById("farmCategories");
+        const cropFarmDiv = document.getElementById("cropFarmGrid"); // For crops
+        const animalFarmDiv = document.getElementById("animalFarmArea"); // For animals
+        const landInfo = document.getElementById("landInfo"); // This is for farmView's land info
+
+        // Inventory View specific elements
+        const inventoryItemsDiv = document.getElementById("inventoryItems");
+
+        // Game Zone View specific elements (NEW)
+        const gameZoneContent = document.getElementById("gameZoneContent");
+
+
+        // Account View specific elements
+        const accountPlayerName = document.getElementById("accountPlayerName");
+        const accountGameId = document.getElementById("accountGameId");
+        const accountLevel = document.getElementById("accountLevel");
+        const accountXP = document.getElementById("accountXP");
+        const accountSilver = document.getElementById("accountSilver"); // New
+        const accountGoldAccountView = document.getElementById("accountGold");     // Corrected ID for gold in account view
+
+        // Shop View specific elements
+        const shopCategories = document.getElementById("shopCategories");
+        const shopItemsDiv = document.getElementById("shopItems");
+
+        // Code View specific elements
+        const codeInputWithdraw = document.getElementById("codeInputWithdraw");
+        const codeInputDeposit = document.getElementById("codeInputDeposit");
+        const codeOutputDiv = document.getElementById("codeOutput");
+        const codeActionsDiv = document.getElementById("codeActions");
+        const depositCodeSection = document.getElementById("depositCodeSection");
+        const withdrawCodeSection = document.getElementById("withdrawCodeSection");
+        const showDepositCodeBtn = document.getElementById("showDepositCodeBtn");
+        const showWithdrawCodeBtn = document.getElementById("showWithdrawCodeBtn");
+
+
+        // Seed Select Modal elements
+        const seedSelect = document.getElementById("seedSelect");
+        const seedOptions = document.getElementById("seedOptions");
+
+        // Animal Place Modal elements (NEW)
+        const animalPlace = document.getElementById("animalPlace");
+        const animalOptions = document.getElementById("animalOptions");
+        let currentAnimalSpotIndex = -1; // To store which spot is being interacted with
+
+
+        // --- Core Authentication and Data Loading ---
+
+        function generateGameId() {
+            return Math.floor(1000000 + Math.random() * 9000000).toString(); // 7-digit
+        }
+
+        // Object to hold all active timers for farm tiles and animals
+        const tileTimers = {};
+        const animalTimers = {};
+
+        // Function to clear all timers (important when user logs out or switches views)
+        function clearAllTimers() {
+            for (const tileIndex in tileTimers) {
+                clearInterval(tileTimers[tileIndex]);
+                delete tileTimers[tileIndex];
+            }
+            for (const animalId in animalTimers) {
+                clearInterval(animalTimers[animalId]);
+                delete animalTimers[animalId];
+            }
+        }
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                userEmail = user.email;
+                playerName = user.email ? user.email.split('@')[0] : "Player";
+                authScreen.style.display = "none";
+                document.getElementById("topBar").style.display = "flex";
+                document.getElementById("navbar").style.display = "flex";
+                console.log("Người dùng đã đăng nhập:", userId);
+                authMessage.textContent = ""; // Clear auth messages on successful login
+
+                // Clear any old timers from previous user/session
+                clearAllTimers();
+
+                await loadUserData(); // Load user data from Firestore
+
+                showView('farmView'); // Default to showing farm UI
+                updateUI(); // Update all UI elements
+            } else {
+                // Reset all global state when user logs out
+                userId = null;
+                userEmail = null;
+                gameId = null;
+                playerName = "Guest";
+                silver = 0; gold = 0; xp = 0; level = 1;
+                unlockedCropTiles = [0]; // Reset crop tiles
+                unlockedAnimalSpots = [0]; // Reset animal spots
+                inventory = {};
+                for (let k in shopItemsData) inventory[k] = 0; // Re-initialize empty inventory structure including new items
+                nextCropTileIndex = 1; //
+                nextAnimalSpotIndex = 1; //
+                friends = [];
+                outgoingRequests = [];
+                incomingRequests = [];
+                plantedCrops = {};
+                animals = {};
+
+                clearAllTimers(); // Clear timers when user logs out
+
+                authScreen.style.display = "flex";
+                document.getElementById("topBar").style.display = "none";
+                document.getElementById("navbar").style.display = "none";
+                hideAllViews();
+                console.log("Người dùng đã đăng xuất hoặc không có người dùng.");
+            }
+        });
+
+        window.signUp = async () => {
+            const email = emailInput.value;
+            const password = passwordInput.value;
+            authMessage.textContent = ""; // Clear previous messages
+
+            if (password.length < 6) {
+                authMessage.textContent = "Mật khẩu phải có ít nhất 6 ký tự.";
+                return;
+            }
+            try {
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                const newUserId = userCredential.user.uid;
+                const newGameId = generateGameId();
+
+                // Ensure default inventory has all shopItemsData keys initialized to 0
+                const defaultInventory = {};
+                for (let k in shopItemsData) defaultInventory[k] = 0;
+
+                await setDoc(doc(db, "users", newUserId), {
+                    silver: 10000, // Starting silver
+                    gold: 0,
+                    xp: 0,
+                    level: 1,
+                    gameId: newGameId,
+                    unlockedCropTiles: [0], // Initialize first crop tile
+                    unlockedAnimalSpots: [0], // Initialize first animal spot
+                    inventory: defaultInventory,
+                    plantedCrops: {}, // Initialize empty planted crops for new user
+                    animals: {},     // Initialize empty animals for new user
+                    nextCropTileIndex: 1, //
+                    nextAnimalSpotIndex: 1, //
+                    friends: [],
+                    outgoingRequests: [],
+                    incomingRequests: []
+                });
+                console.log("Dữ liệu người dùng mới đã được khởi tạo cho:", newUserId);
+                // Auth state change listener will handle loading data after sign up
+            } catch (error) {
+                authMessage.textContent = `Lỗi đăng ký: ${error.message}`;
+                console.error("Lỗi khi đăng ký:", error);
+            }
+        };
+
+        window.signIn = async () => {
+            const email = emailInput.value;
+            const password = passwordInput.value;
+            authMessage.textContent = ""; // Clear previous messages
+
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                // Auth state change listener will handle loading data after sign in
+            } catch (error) {
+                authMessage.textContent = `Lỗi đăng nhập: ${error.message}`;
+                console.error("Lỗi khi đăng nhập:", error);
+            }
+        };
+
+        window.logout = async () => {
+            try {
+                await signOut(auth);
+            } catch (error) {
+                alert(error.message);
+                console.error("Lỗi khi đăng xuất:", error);
+            }
+        };
+
+        async function loadUserData() {
+            if (!userId) return; // Ensure userId exists before trying to load
+
+            const userDocRef = doc(db, "users", userId);
+            try {
+                const docSnap = await getDoc(userDocRef);
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+
+                    // Assign loaded data to global variables
+                    silver = data.silver || 0;
+                    gold = data.gold || 0;
+                    xp = data.xp || 0;
+                    level = data.level || 1;
+                    gameId = data.gameId || generateGameId(); // Generate if missing (for old users)
+                    unlockedCropTiles = Array.isArray(data.unlockedCropTiles) && data.unlockedCropTiles.length > 0 ? data.unlockedCropTiles : [0]; // Load crop tiles
+                    unlockedAnimalSpots = Array.isArray(data.unlockedAnimalSpots) && data.unlockedAnimalSpots.length > 0 ? data.unlockedAnimalSpots : [0]; // Load animal spots
+
+                    // Merge inventory: ensure all shopItemsData keys exist even if new in game schema
+                    let loadedInventory = data.inventory || {};
+                    inventory = {}; // Reset to ensure clean state
+                    for (let k in shopItemsData) {
+                        inventory[k] = loadedInventory[k] !== undefined ? loadedInventory[k] : 0;
+                    }
+                    
+                    // Backward compatibility for animal data structure
+                    let loadedAnimals = data.animals || {};
+                    // Ensure animals data has currentProducts and lastProductTime for existing animals
+                    for (const spotIndex in loadedAnimals) { // Iterating by spotIndex, not animalId
+                         const animalInstance = loadedAnimals[spotIndex];
+                         const animalDef = animalData[animalInstance.type]; // Get animal definition
+
+                         if (animalInstance.hasOwnProperty('nextProductTime') && !animalInstance.hasOwnProperty('lastProductTime')) {
+                            console.log(`Updating animal data structure for animal at spot ${spotIndex}`); //
+                            animalInstance.lastProductTime = Date.now() - animalDef.productInterval; // Assume one product is ready if old format
+                            animalInstance.currentProducts = 0; // Will be calculated on render
+                            delete animalInstance.nextProductTime; // Remove old field
+                         }
+                         if (!animalInstance.hasOwnProperty('currentProducts')) { // Ensure new field exists
+                            animalInstance.currentProducts = 0;
+                         }
+                         if (!animalInstance.hasOwnProperty('lastProductTime')) { // Ensure new field exists
+                            animalInstance.lastProductTime = Date.now();
+                         }
+                    }
+                    animals = loadedAnimals;
+
+                    plantedCrops = data.plantedCrops || {}; // Load plantedCrops
+                    nextCropTileIndex = data.nextCropTileIndex || 1; //
+                    nextAnimalSpotIndex = data.nextAnimalSpotIndex || 1; //
+                    friends = Array.isArray(data.friends) ? data.friends : [];
+                    outgoingRequests = Array.isArray(data.outgoingRequests) ? data.outgoingRequests : [];
+                    incomingRequests = Array.isArray(data.incomingRequests) ? data.incomingRequests : [];
+
+                    console.log("Đã tải dữ liệu người dùng thành công:", data);
+
+                    // If gameId or inventory structure or new fields were missing/inconsistent, update Firestore
+                    if (!data.gameId || !shallowEqual(loadedInventory, inventory) || !data.animals || !data.plantedCrops || !data.unlockedCropTiles || !data.unlockedAnimalSpots) { // Check for new fields
+                        await updateDoc(userDocRef, {
+                            gameId: gameId,
+                            inventory: inventory, // Ensure latest inventory structure is persisted
+                            plantedCrops: plantedCrops, // Ensure plantedCrops is persisted if newly initialized
+                            animals: animals,          // Ensure animals is persisted if newly initialized
+                            unlockedCropTiles: unlockedCropTiles, // Persist new field
+                            unlockedAnimalSpots: unlockedAnimalSpots // Persist new field
+                        });
+                        console.log("Updated user data in Firestore (gameId/inventory/plantedCrops/animals/unlockedTiles schema).");
+                    }
+
+                } else {
+                    // This case should ideally not happen if signUp worked, but good for robustness
+                    console.log("Không tìm thấy dữ liệu người dùng này. Đang khởi tạo dữ liệu mặc định.");
+                    const defaultInventory = {};
+                    for (let k in shopItemsData) defaultInventory[k] = 0;
+                    gameId = generateGameId(); // Generate new ID
+                    await setDoc(userDocRef, {
+                        silver: 10000, gold: 0, xp: 0, level: 1,
+                        gameId: gameId,
+                        unlockedCropTiles: [0], //
+                        unlockedAnimalSpots: [0], //
+                        inventory: defaultInventory,
+                        plantedCrops: {},
+                        animals: {},
+                        nextCropTileIndex: 1, //
+                        nextAnimalSpotIndex: 1, //
+                        friends: [], outgoingRequests: [], incomingRequests: []
+                    });
+                    await loadUserData(); // Reload after creating default data
+                }
+            } catch (error) {
+                console.error("Lỗi khi tải dữ liệu người dùng từ Firestore:", error);
+                authMessage.textContent = `Lỗi tải dữ liệu game: ${error.message}. Vui lòng kiểm tra kết nối hoặc quy tắc Firebase.`;
+                // Force logout on critical load error to prevent playing with incorrect data
+                await logout();
+            }
+        }
+
+        // Helper to check if two objects have the same keys and shallow values
+        function shallowEqual(object1, object2) {
+            const keys1 = Object.keys(object1);
+            const keys2 = Object.keys(object2);
+            if (keys1.length !== keys2.length) {
+                return false;
+            }
+            for (let key of keys1) {
+                if (object1[key] !== object2[key]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Save data with a small debounce to prevent too frequent writes
+        let saveTimeout;
+        function saveUserData() {
+            if (userId) {
+                clearTimeout(saveTimeout); // Clear any existing timeout
+                saveTimeout = setTimeout(() => {
+                    setDoc(doc(db, "users", userId), {
+                        silver, gold, xp, level, unlockedCropTiles, unlockedAnimalSpots, inventory, nextCropTileIndex, nextAnimalSpotIndex, friends, outgoingRequests, incomingRequests, gameId, plantedCrops, animals
+                    }, { merge: true }) // Use merge:true to only update changed fields
+                    .then(() => console.log("Dữ liệu người dùng đã được lưu."))
+                    .catch((error) => console.error("Lỗi khi lưu dữ liệu người dùng:", error));
+                }, 500); // Wait 500ms before saving
+            }
+        }
+
+        // --- Game Logic Functions ---
+
+        function getXPToLevel(lv) { return lv * 1000; }
+
+        function updateUI() {
+            // topPlayerName.textContent = userEmail; // Removed
+            silverSpan.textContent = formatCurrency(silver);
+            goldSpan.textContent = formatCurrency(gold);
+
+            // Update specific view UIs if they are active
+            if (farmView.style.display === "block") {
+                // Determine which farm section is active and render accordingly
+                const activeCategory = farmCategories.querySelector('.farm-category-button.active');
+                if (activeCategory) {
+                    if (activeCategory.dataset.category === 'crop') {
+                        renderCropFarm();
+                    } else if (activeCategory.dataset.category === 'animal') {
+                        renderAnimalFarm();
+                    }
+                } else { // Default to crop if no active category found
+                    renderCropFarm();
+                }
+            } else if (inventoryView.style.display === "block") {
+                renderInventory();
+            } else if (gameZoneView.style.display === "block") {
+                renderGameZoneUI();
+            } else if (accountView.style.display === "block") {
+                renderAccountUI();
+            } else if (shopView.style.display === "block") {
+                const activeCategory = shopCategories.querySelector('.shop-category-button.active');
+                renderShop(activeCategory ? activeCategory.dataset.category : 'seed');
+            }
+        }
+
+        function formatCurrency(num) {
+            return num.toLocaleString('vi-VN');
+        }
+
+        function gainXP(amount) {
+            xp += amount;
+            while (xp >= getXPToLevel(level) && level < 50) {
+                xp -= getXPToLevel(level);
+                level++;
+            }
+            updateUI();
+            saveUserData();
+        }
+
+        function getLandCost() { // For crop tiles
+            let baseSilver = 25000 + (unlockedCropTiles.length -1) * 5000;
+            // Removed gold cost for land tiles
+            const currentTileCount = unlockedCropTiles.length;
+
+            if (currentTileCount >= 15) {
+                baseSilver *= 2;
+            } else if (currentTileCount >= 10) {
+                baseSilver *= 1.6;
+            } else if (currentTileCount >= 5) {
+                baseSilver *= 1.3;
+            }
+            return { silver: Math.floor(baseSilver) }; // Only return silver cost
+        }
+        
+        // NEW: Centralized cost deduction function
+        function deductCost(cost) { // cost is an object {silver: amount, gold: amount}
+            const costSilver = cost.silver || 0;
+            const costGold = cost.gold || 0;
+
+            if (silver < costSilver) {
+                alert(`Không đủ bạc! Cần ${formatCurrency(costSilver)} bạc.`);
+                return false;
+            }
+            if (gold < costGold) {
+                alert(`Không đủ vàng! Cần ${formatCurrency(costGold)} vàng.`);
+                return false;
+            }
+            
+            // Prioritize silver, then gold. This is mainly for land tiles now.
+            let remainingSilverCost = costSilver;
+            let remainingGoldCost = costGold;
+
+            // Deduct silver part
+            silver -= remainingSilverCost;
+
+            // Deduct gold part
+            gold -= remainingGoldCost;
+            
+            return true;
+        }
+
+
+        window.buyLandTile = () => { // For crop tiles
+            if (unlockedCropTiles.length >= farmSize) {
+                alert("Đã mở toàn bộ ô đất trồng trọt.");
+                return;
+            }
+            const cost = getLandCost(); // This will only return silver
+            if (deductCost(cost)) { // deductCost will handle deducting only silver
+                unlockedCropTiles.push(unlockedCropTiles.length); // Add the next available index
+                alert("Mua ô đất trồng trọt thành công!");
+                updateUI();
+                saveUserData();
+            }
+        };
+
+        window.buyAnimalSpot = () => { // New function for animal spots
+            const currentSpots = unlockedAnimalSpots.length;
+            if (currentSpots >= maxAnimalSpots) {
+                alert("Đã mở toàn bộ ô chăn nuôi.");
+                return;
+            }
+
+            const nextSpotIndex = currentSpots + 1;
+            const costData = animalSpotCosts[nextSpotIndex]; // Get cost for the next spot
+
+            if (!costData) {
+                alert("Không có ô chăn nuôi để mua thêm.");
+                return;
+            }
+            if (level < costData.level) {
+                alert(`Cần level ${costData.level} để mua ô chăn nuôi này.`);
+                return;
+            }
+
+            const cost = { silver: costData.silver || 0, gold: costData.gold || 0 };
+            if (deductCost(cost)) {
+                unlockedAnimalSpots.push(currentSpots); // Add the next spot index
+                alert("Mua ô chăn nuôi thành công!");
+                updateUI();
+                saveUserData();
+            }
+        };
+
+
+        // --- Farm Render Functions (SPLIT) ---
+
+        function renderCropFarm() {
+            cropFarmDiv.innerHTML = ""; // Clear existing tiles
+            // Clear only crop-related timers
+            for (const tileIndex in tileTimers) {
+                // Ensure we only clear timers for planted crops, not animals (animals are now in separate "animals" object)
+                if (plantedCrops[tileIndex]) {
+                    clearInterval(tileTimers[tileIndex]);
+                    delete tileTimers[tileIndex];
+                }
+            }
+
+            for (let i = 0; i < farmSize; i++) {
+                const tile = document.createElement("div");
+                tile.className = "tile crop-tile";
+                tile.dataset.tileIndex = i; // Store tile index for easy access
+
+                if (!unlockedCropTiles.includes(i)) { // Check against unlockedCropTiles
+                    tile.classList.add("locked");
+                    tile.innerHTML = "<span>Khóa</span>";
+                    tile.onclick = () => {
+                        alert("Ô đất này đang khóa. Vui lòng mua thêm ô đất tại Cửa hàng (Mục Đặc biệt).");
+                    };
+                } else {
+                    const plantedCrop = plantedCrops[i];
+                    if (plantedCrop) {
+                        const seed = seedData[plantedCrop.seedKey];
+                        if (seed) {
+                            const now = Date.now();
+                            const timeRemainingMs = plantedCrop.endTime - now;
+
+                            if (timeRemainingMs <= 0) {
+                                tile.classList.add("grown");
+                                tile.innerHTML = `${seed.emoji}<small class="tile-info">✔ Thu hoạch</small>`;
+                                tile.onclick = () => harvestCrop(i, seed);
+                            } else {
+                                tile.classList.add("planted");
+                                tile.innerHTML = `${seed.emoji}<small class="tile-info"></small>`;
+                                const smallElement = tile.querySelector(".tile-info");
+
+                                tileTimers[i] = setInterval(() => {
+                                    const currentTimeRemainingMs = plantedCrop.endTime - Date.now();
+                                    const secondsRemaining = Math.max(0, Math.ceil(currentTimeRemainingMs / 1000));
+                                    smallElement.textContent = `${secondsRemaining}s - +${formatCurrency(seed.profit)}💰`; // Changed 🥇 to 💰
+                                    if (secondsRemaining <= 0) {
+                                        clearInterval(tileTimers[i]);
+                                        delete tileTimers[i];
+                                        tile.classList.remove("planted");
+                                        tile.classList.add("grown");
+                                        tile.innerHTML = `${seed.emoji}<small class="tile-info">✔ Thu hoạch</small>`;
+                                        tile.onclick = () => harvestCrop(i, seed);
+                                    }
+                                }, 1000);
+                                tile.onclick = () => alert("Cây đang lớn. Vui lòng đợi thu hoạch.");
+                            }
+                        } else {
+                            console.warn(`Invalid seedKey '${plantedCrop.seedKey}' for tile ${i}. Treating as empty.`);
+                            delete plantedCrops[i];
+                            tile.innerHTML = `<small class="tile-info"></small>`;
+                            tile.onclick = () => showSeedSelect(i, tile);
+                        }
+                    } else {
+                        tile.innerHTML = `<small class="tile-info"></small>`;
+                        tile.onclick = () => showSeedSelect(i, tile);
+                    }
+                }
+                cropFarmDiv.appendChild(tile);
+            }
+        }
+
+        function renderAnimalFarm() { // Updated to use animal spots
+            animalFarmDiv.innerHTML = ""; // Clear existing animals
+            // Clear all animal-related timers
+            for (const spotIndex in animalTimers) {
+                clearInterval(animalTimers[spotIndex]);
+                delete animalTimers[spotIndex];
+            }
+            
+            for (let i = 0; i < maxAnimalSpots; i++) { // Loop through all possible spots
+                const animalDiv = document.createElement("div");
+                animalDiv.className = "animal-item";
+                animalDiv.dataset.spotIndex = i; // Store spot index
+
+                if (!unlockedAnimalSpots.includes(i)) { // If spot is locked
+                    animalDiv.classList.add("locked");
+                    const costData = animalSpotCosts[i + 1]; // Cost for the next spot
+                    let unlockInfo = "";
+                    if (costData) {
+                        unlockInfo = `Cấp ${costData.level} - ${formatCurrency(costData.silver)} bạc`; //
+                    }
+                    animalDiv.innerHTML = `<span>Khóa</span><small>${unlockInfo}</small>`; //
+                    animalDiv.onclick = () => {
+                        alert("Ô chăn nuôi này đang khóa. Vui lòng mua thêm ô chăn nuôi tại Cửa hàng (Mục Đặc biệt)."); //
+                    };
+                } else { // Spot is unlocked
+                    const animalInstance = animals[i]; // Get animal by spot index
+                    if (animalInstance) {
+                        const animalDef = animalData[animalInstance.type];
+
+                        if (animalDef) {
+                            const now = Date.now();
+                            
+                            // Calculate how many products have been produced since last check
+                            const timeSinceLastProduct = now - animalInstance.lastProductTime;
+                            const newProducts = Math.floor(timeSinceLastProduct / animalDef.productInterval);
+
+                            if (newProducts > 0) {
+                                const producible = animalDef.maxProducts - animalInstance.currentProducts;
+                                const produced = Math.min(newProducts, producible);
+                                if (produced > 0) {
+                                    animalInstance.currentProducts += produced;
+                                    animalInstance.lastProductTime += produced * animalDef.productInterval;
+                                    saveUserData(); // Save the updated state
+                                }
+                            }
+
+                            let contentHTML = `${animalDef.emoji}<br>`;
+                            
+                            if (animalInstance.currentProducts > 0) {
+                                animalDiv.classList.add("ready-to-collect");
+                                contentHTML += `<span>${animalDef.productEmoji} x ${animalInstance.currentProducts}</span>`;
+                                // Ensure only the button triggers collect
+                                contentHTML += `<button class="btn btn-small green" onclick="collectAnimalProduct(${i}); event.stopPropagation();">Thu Hoạch</button>`; // Added event.stopPropagation()
+                                animalDiv.onclick = () => { /* Do nothing when clicking the animal itself if products are ready, let the button handle it. */ };
+                            } else {
+                                contentHTML += `<small class="animal-info"></small>`;
+                                animalDiv.onclick = () => alert("Vật nuôi đang nghỉ. Vui lòng đợi sản phẩm tiếp theo.");
+                            }
+                            
+                            animalDiv.innerHTML = contentHTML;
+
+                            // Timer for the next product if not full
+                            if (animalInstance.currentProducts < animalDef.maxProducts) {
+                                 const smallElement = animalDiv.querySelector(".animal-info");
+                                 if (smallElement) {
+                                     animalTimers[i] = setInterval(() => { // Use spot index as timer key
+                                        const timeToNext = animalInstance.lastProductTime + animalDef.productInterval - Date.now();
+                                        if (timeToNext <= 0) {
+                                            clearInterval(animalTimers[i]);
+                                            delete animalTimers[i];
+                                            renderAnimalFarm(); // Re-render to update product count
+                                        } else {
+                                            const secondsRemaining = Math.max(0, Math.ceil(timeToNext / 1000));
+                                            const minutes = Math.floor(secondsRemaining / 60);
+                                            const seconds = secondsRemaining % 60;
+                                            smallElement.textContent = `Tiếp theo: ${minutes}p ${seconds}s`;
+                                        }
+                                    }, 1000);
+                                 }
+                            } else {
+                                 const smallElement = animalDiv.querySelector(".animal-info");
+                                 if(smallElement) smallElement.textContent = "Đầy kho!";
+                            }
+                        } else {
+                            console.warn(`Invalid animal type '${animalInstance.type}' found for spot ${i}. Removing.`); //
+                            delete animals[i]; // Clean up invalid entry
+                            saveUserData();
+                            animalDiv.innerHTML = "<span>+</span><br><span>Thêm vật nuôi</span>"; // Show add button
+                            animalDiv.onclick = () => showAnimalPlaceSelect(i); // Pass spot index
+                        }
+                    } else { // Spot is empty
+                        animalDiv.innerHTML = "<span>+</span><br><span>Thêm vật nuôi</span>";
+                        animalDiv.classList.add("add-animal-btn");
+                        animalDiv.onclick = () => showAnimalPlaceSelect(i); // Pass spot index
+                    }
+                }
+                animalFarmDiv.appendChild(animalDiv);
+            }
+            if (unlockedAnimalSpots.length === 0 && maxAnimalSpots > 0) { // If no spots unlocked, show placeholder for first spot
+                animalFarmDiv.innerHTML = "<p class='placeholder-text'>Chưa có ô chăn nuôi nào được mở. Hãy mở ô đầu tiên tại Cửa hàng (Mục Đặc biệt)!</p>";
+            } else if (Object.keys(animals).length === 0 && unlockedAnimalSpots.length > 0) { // If spots unlocked but no animals placed
+                // This case is handled by the loop adding '+' buttons to empty spots
+            }
+        }
+
+
+        window.changeFarmCategory = (category) => {
+            // Remove active class from all buttons
+            Array.from(farmCategories.children).forEach(btn => btn.classList.remove('active'));
+            // Add active class to the clicked button
+            const activeBtn = farmCategories.querySelector(`[data-category="${category}"]`);
+            if (activeBtn) activeBtn.classList.add('active');
+
+            if (category === 'crop') {
+                cropFarmDiv.style.display = 'grid'; // Use grid for crops
+                animalFarmDiv.style.display = 'none';
+                renderCropFarm();
+            } else if (category === 'animal') {
+                cropFarmDiv.style.display = 'none';
+                animalFarmDiv.style.display = 'flex'; // Changed to flex for animals as well
+                renderAnimalFarm();
+            }
+        };
+
+        // --- Crop Specific Functions ---
+        function showSeedSelect(tileIndex, tileElement) {
+            seedOptions.innerHTML = "";
+            let hasPurchasableSeeds = false;
+
+            for (let key in seedData) { // Only iterate through seedData for planting
+                const s = seedData[key];
+                // Check if user has seeds in inventory AND meets level requirement
+                if (inventory[key] > 0 && level >= s.level) {
+                    hasPurchasableSeeds = true;
+                    const btn = document.createElement("button");
+                    btn.textContent = `${s.emoji} ${s.name} (SL: ${inventory[key]})`;
+                    btn.onclick = () => plantCrop(tileIndex, tileElement, key, s);
+                    seedOptions.appendChild(btn);
+                }
+            }
+
+            if (!hasPurchasableSeeds) {
+                seedOptions.innerHTML = '<p class="placeholder-text-small">Bạn chưa có hạt giống nào hoặc chưa đạt level yêu cầu để trồng. Hãy mua từ Cửa hàng!</p>';
+            }
+
+            toggleSeed(true);
+        }
+
+        function plantCrop(tileIndex, tileElement, seedKey, seed) {
+            if (inventory[seedKey] <= 0) {
+                alert("Không đủ hạt giống để trồng!");
+                return;
+            }
+            if (plantedCrops[tileIndex]) {
+                alert("Ô đất này đã có cây rồi!");
+                return;
+            }
+
+            inventory[seedKey]--;
+            const endTime = Date.now() + seed.time;
+            plantedCrops[tileIndex] = { seedKey: seedKey, endTime: endTime }; // Store in plantedCrops
+
+            toggleSeed(false); // Close seed select modal
+            updateUI(); // Re-render farm to start timer on tile
+            saveUserData();
+        }
+
+        function harvestCrop(tileIndex, seed) {
+            gold += seed.profit; // CROP NOW GIVES GOLD
+            gainXP(seed.xp);
+            delete plantedCrops[tileIndex]; // Remove crop from plantedCrops
+
+            updateUI(); // Re-render farm to clear tile and update stats
+            saveUserData();
+        }
+
+        // --- Animal Specific Functions (NEW & UPDATED) ---
+
+        function showAnimalPlaceSelect(spotIndex) { // Now takes spotIndex
+            currentAnimalSpotIndex = spotIndex; // Store the spot index
+            animalOptions.innerHTML = "";
+            let hasPurchasableAnimals = false;
+
+            // Check if this spot already has an animal
+            if (animals[spotIndex]) {
+                alert("Ô này đã có vật nuôi rồi!");
+                toggleAnimalPlace(false);
+                return;
+            }
+
+            for (let key in animalData) {
+                const animal = animalData[key];
+                // Check if user has animals in inventory AND meets level requirement
+                if (inventory[key] > 0 && level >= animal.level) {
+                    hasPurchasableAnimals = true;
+                    const btn = document.createElement("button");
+                    btn.textContent = `${animal.emoji} ${animal.name} (SL: ${inventory[key]})`;
+                    btn.onclick = () => placeAnimal(spotIndex, key, animal); // Pass spotIndex
+                    animalOptions.appendChild(btn);
+                }
+            }
+
+            if (!hasPurchasableAnimals) {
+                animalOptions.innerHTML = '<p class="placeholder-text-small">Bạn chưa có vật nuôi nào hoặc chưa đạt level yêu cầu. Hãy mua từ Cửa hàng!</p>';
+            }
+            toggleAnimalPlace(true);
+        }
+
+        function placeAnimal(spotIndex, animalKey, animalDef) { // Added spotIndex parameter
+            if (inventory[animalKey] <= 0) {
+                alert("Không đủ vật nuôi để đặt!");
+                return;
+            }
+            // Check if the spot is already occupied
+            if (animals[spotIndex]) {
+                alert("Ô này đã có vật nuôi rồi!");
+                return;
+            }
+
+            inventory[animalKey]--;
+            
+            // Assign animal to the specific spot index
+            animals[spotIndex] = { 
+                type: animalKey, 
+                lastProductTime: Date.now(),
+                currentProducts: 0
+            };
+
+            toggleAnimalPlace(false);
+            renderAnimalFarm(); // Directly call render function to update view
+            saveUserData();
+        }
+
+        window.collectAnimalProduct = (spotIndex) => { // Takes spotIndex
+            console.log(`Attempting to collect from spotIndex: ${spotIndex}`); // Debug log
+            const animalInstance = animals[spotIndex]; // Get animal by spot index
+            
+            if (!animalInstance) {
+                console.warn(`No animal instance found at spot ${spotIndex}.`);
+                return; // Nothing to collect
+            }
+
+            if (animalInstance.currentProducts === 0) {
+                console.log(`No products to collect from animal at spot ${spotIndex}. Current products: ${animalInstance.currentProducts}`); // Debug log
+                return; // Nothing to collect
+            }
+            
+            const animalDef = animalData[animalInstance.type];
+            const productsCollected = animalInstance.currentProducts;
+            const goldEarned = productsCollected * animalDef.productValue;
+            
+            gold += goldEarned; // Products from animals give GOLD
+            gainXP(animalDef.xp * productsCollected);
+            
+            animalInstance.currentProducts = 0;
+            // If it was full, the timer will restart from now.
+            if (productsCollected >= animalDef.maxProducts) {
+                animalInstance.lastProductTime = Date.now();
+            }
+
+            alert(`Thu hoạch ${productsCollected} ${animalDef.product}. Bạn nhận được ${formatCurrency(goldEarned)} vàng!`);
+
+            console.log(`Collected ${productsCollected} ${animalDef.product} from spot ${spotIndex}. Gold earned: ${goldEarned}. Current gold: ${gold}`); // Debug log
+            renderAnimalFarm(); // Re-render to update the display
+            saveUserData();
+        }
+
+
+        // Shop Functions
+        function renderShop(category = 'seed') {
+            shopItemsDiv.innerHTML = "";
+            // Clear active state from all category buttons
+            Array.from(shopCategories.children).forEach(btn => btn.classList.remove('active'));
+            // Set active state for the current category button
+            const activeBtn = shopCategories.querySelector(`[data-category="${category}"]`);
+            if (activeBtn) activeBtn.classList.add('active');
+
+            let hasItems = false;
+            for (let key in shopItemsData) {
+                const item = shopItemsData[key];
+                if (item.category === category) {
+                    hasItems = true;
+                    const itemDiv = document.createElement("div");
+                    itemDiv.className = "shop-item";
+                    let detailsHtml = '';
+                    let actionButtonHtml = '';
+                    let disabledBuy = '';
+
+                    if (item.category === 'seed') {
+                        detailsHtml = `
+                            <p class="item-requirements">
+                                Cấp độ: ${item.level}<br>
+                                Lợi nhuận: ${formatCurrency(item.profit)} vàng<br>
+                                Thời gian: ${item.time / 1000}s
+                            </p>
+                        `;
+                        disabledBuy = (level < item.level || silver < item.cost) ? 'disabled' : '';
+                        actionButtonHtml = `
+                            <button class="btn btn-primary" onclick="buyShopItem('${key}')" ${disabledBuy}>
+                                Mua ${formatCurrency(item.cost)} bạc
+                            </button>
+                            <p class="item-inventory">Trong kho: ${inventory[key]}</p>
+                        `;
+                    } else if (item.category === 'animal') {
+                        detailsHtml = `
+                            <p class="item-requirements">
+                                Cấp độ: ${item.level}<br>
+                                Sản phẩm: ${item.product} ${item.productEmoji}<br>
+                                Giá bán: ${formatCurrency(item.productValue)} vàng<br>
+                                Thời gian: ${item.productInterval / (1000 * 60 * 60)} giờ
+                            </p>
+                        `;
+                        disabledBuy = (level < item.level || gold < item.cost_gold) ? 'disabled' : ''; // No max count check here, as they are placed on spots
+
+                        actionButtonHtml = `
+                            <button class="btn btn-primary" onclick="buyShopItem('${key}')" ${disabledBuy}>
+                                Mua ${formatCurrency(item.cost_gold)} vàng 💰
+                            </button>
+                            <p class="item-inventory">Trong kho: ${inventory[key]}</p>
+                        `;
+                    } else if (item.category === 'special' && item.type === 'land') {
+                        const currentUnlocked = unlockedCropTiles.length; // Use unlockedCropTiles
+                        const landCost = getLandCost(); // This will only return silver
+                        const canAfford = (silver >= landCost.silver); // Only check silver
+
+                        disabledBuy = (currentUnlocked >= farmSize || !canAfford) ? 'disabled' : '';
+                        detailsHtml = `
+                            <p class="item-requirements">
+                                Cấp độ: ${item.level}<br>
+                                Ô đã mở: ${currentUnlocked} / ${farmSize}
+                            </p>
+                            <p class="item-details">
+                                Giá ô tiếp theo: ${formatCurrency(landCost.silver)} bạc
+                            </p>
+                        `;
+                        actionButtonHtml = `
+                            <button class="btn btn-primary" onclick="buyShopItem('${key}')" ${disabledBuy}>
+                                Mua ô đất
+                            </button>
+                        `;
+                    } else if (item.category === 'special' && item.type === 'animal_spot') { // New: Animal spot item
+                        const currentUnlockedSpots = unlockedAnimalSpots.length; //
+                        const nextSpotNumber = currentUnlockedSpots + 1; //
+                        const costData = animalSpotCosts[nextSpotNumber]; //
+
+                        let costText = "";
+                        let canAfford = false;
+                        let meetLevel = false;
+
+                        if (costData) {
+                            costText = `${formatCurrency(costData.silver)} bạc`;
+                            canAfford = silver >= costData.silver;
+                            meetLevel = level >= costData.level;
+                        } else {
+                            costText = "Đã mở tối đa";
+                            canAfford = false;
+                            meetLevel = true; // irrelevant if no more spots to buy
+                        }
+                        
+                        disabledBuy = (currentUnlockedSpots >= maxAnimalSpots || !canAfford || !meetLevel) ? 'disabled' : '';
+
+                        detailsHtml = `
+                            <p class="item-requirements">
+                                Cấp độ yêu cầu: ${costData ? costData.level : 'N/A'}<br>
+                                Ô đã mở: ${currentUnlockedSpots} / ${maxAnimalSpots}
+                            </p>
+                            <p class="item-details">
+                                Giá ô tiếp theo (${nextSpotNumber}): ${costText}
+                            </p>
+                        `;
+                        actionButtonHtml = `
+                            <button class="btn btn-primary" onclick="buyShopItem('${key}')" ${disabledBuy}>
+                                Mua ô chăn nuôi
+                            </button>
+                        `;
+                    }
+
+
+                    itemDiv.innerHTML = `
+                        <p class="item-name">${item.emoji} ${item.name}</p>
+                        ${detailsHtml}
+                        ${actionButtonHtml}
+                    `;
+                    shopItemsDiv.appendChild(itemDiv);
+                }
+            }
+            if (!hasItems) {
+                shopItemsDiv.innerHTML = `<p class="placeholder-text">Không có vật phẩm nào trong danh mục này.</p>`;
+            }
+        }
+
+        window.buyShopItem = (itemKey) => {
+            const item = shopItemsData[itemKey];
+            if (!item) { alert("Vật phẩm không hợp lệ!"); return; }
+            
+            if (item.category === 'special' && item.type === 'land') {
+                buyLandTile(); // Call the specific crop land buying function
+            } else if (item.category === 'special' && item.type === 'animal_spot') { // Handle buying animal spot
+                buyAnimalSpot();
+            } else if (item.category === 'animal') {
+                if (level < item.level) { alert(`Cần level ${item.level} để mua vật phẩm này!`); return; }
+                const cost = { gold: item.cost_gold };
+                if(deductCost(cost)) {
+                    inventory[itemKey] = (inventory[itemKey] || 0) + 1;
+                    alert(`Đã mua 1 ${item.name}!`);
+                }
+            }
+            else { // For seeds
+                if (level < item.level) { alert(`Cần level ${item.level} để mua vật phẩm này!`); return; }
+                const cost = { silver: item.cost };
+                if (deductCost(cost)) {
+                    inventory[itemKey] = (inventory[itemKey] || 0) + 1; // Ensure it's not undefined
+                    alert(`Đã mua 1 ${item.name}!`);
+                }
+            }
+            updateUI();
+            saveUserData();
+        };
+
+        // --- Inventory Functions ---
+        function renderInventory() {
+            inventoryItemsDiv.innerHTML = "";
+            let hasItems = false;
+            for (let key in inventory) {
+                // Only show if quantity is greater than 0 AND it's not a special item like land (which isn't tracked in inventory count)
+                const itemDef = shopItemsData[key];
+                if (inventory[key] > 0 && itemDef && itemDef.category !== 'special') {
+                    hasItems = true;
+                    const item = shopItemsData[key]; // Use shopItemsData for all items
+                    if (!item) { // Handle case where item key exists in inventory but not in shopItemsData
+                        console.warn(`Inventory contains unknown item key: ${key}`);
+                        continue;
+                    }
+                    const itemDiv = document.createElement("div");
+                    itemDiv.className = "inventory-item";
+                    let details = '';
+                    if (item.category === 'seed') {
+                        details = `Level yêu cầu: ${item.level}`;
+                    } else if (item.category === 'animal') {
+                        details = `Sản phẩm: ${item.product} ${item.productEmoji} | Level yêu cầu: ${item.level}`;
+                    }
+
+                    itemDiv.innerHTML = `
+                        <p class="item-name">${item.emoji} ${item.name}</p>
+                        <p class="item-quantity">Số lượng: ${inventory[key]}</p>
+                        <p class="item-details">${details}</p>
+                    `;
+                    inventoryItemsDiv.appendChild(itemDiv);
+                }
+            }
+            if (!hasItems) {
+                inventoryItemsDiv.innerHTML = "<p class='placeholder-text'>Kho đồ của bạn đang trống. Hãy mua hạt giống hoặc vật nuôi từ Cửa hàng!</p>";
+            }
+        }
+
+        // --- Game Zone Functions (NEW - Replaced Friends) ---
+        function renderGameZoneUI() {
+            gameZoneContent.innerHTML = `
+                <p>Chào mừng đến Khu Trò Chơi! Tại đây bạn có thể tham gia các mini-game để kiếm thêm vàng và XP.</p>
+                <div class="mini-game-list">
+                    <div class="mini-game-item">
+                        <h4>🔥 Đua Top Nông Dân</h4>
+                        <p>Thi đấu xem ai có năng suất cao nhất trong tuần. Phần thưởng hấp dẫn!</p>
+                        <button class="btn btn-secondary" disabled>Sắp ra mắt</button>
+                    </div>
+                    <div class="mini-game-item">
+                        <h4>🎲 Vòng Quay May Mắn</h4>
+                        <p>Sử dụng vàng để quay vòng quay, có cơ hội nhận bạc, vàng, hoặc vật phẩm hiếm.</p>
+                        <button class="btn btn-secondary" disabled>Sắp ra mắt</button>
+                    </div>
+                    <div class="mini-game-item">
+                        <h4>🧩 Xếp Hình Nông Trại</h4>
+                        <p>Thử thách trí tuệ với các câu đố xếp hình chủ đề nông trại.</p>
+                        <button class="btn btn-secondary" disabled>Sắp ra mắt</button>
+                    </div>
+                </div>
+                <p style="margin-top:20px; font-style: italic; text-align: center;">Các mini-game sẽ sớm được cập nhật!</p>
+            `;
+            // Removed friend-specific UI elements and functions.
+            // If friend functionality is needed in the future, it's would require a dedicated view.
+        }
+
+        // --- Account Functions ---
+        function renderAccountUI() {
+            accountPlayerName.textContent = userEmail;
+            accountGameId.textContent = gameId;
+            accountLevel.textContent = level;
+            accountXP.textContent = `${xp} / ${formatCurrency(getXPToLevel(level))}`;
+            accountSilver.textContent = formatCurrency(silver); // Display silver
+            accountGoldAccountView.textContent = formatCurrency(gold);     // Display gold
+        }
+
+        // --- Code Functions ---
+
+        // Function to show deposit section and hide others
+        window.showDepositSection = () => {
+            depositCodeSection.style.display = 'block';
+            withdrawCodeSection.style.display = 'none';
+            codeOutputDiv.textContent = ''; // Clear output when switching
+            codeInputDeposit.value = ''; // Clear input
+            showDepositCodeBtn.classList.add('active');
+            showWithdrawCodeBtn.classList.remove('active');
+        }
+
+        // Function to show withdraw section and hide others
+        window.showWithdrawSection = () => {
+            depositCodeSection.style.display = 'none';
+            withdrawCodeSection.style.display = 'block';
+            codeOutputDiv.textContent = ''; // Clear output when switching
+            codeInputWithdraw.value = ''; // Clear input
+            showWithdrawCodeBtn.classList.add('active');
+            showDepositCodeBtn.classList.remove('active');
+        }
+
+window.handleDepositCode = async () => {
+    const codeInput = document.getElementById("codeInputDeposit");
+    const codeOutputDiv = document.getElementById("codeOutput");
+    const codeValue = codeInput.value.trim().toUpperCase();
+
+    if (!codeValue || !codeValue.startsWith("NAP-")) {
+        codeOutputDiv.textContent = "❌ Mã không hợp lệ.";
+        return;
+    }
+
+    const codeRef = doc(db, "public_codes", codeValue);
+    const userDocRef = doc(db, "users", userId);
+
+    try {
+        await runTransaction(db, async (transaction) => {
+            const codeSnap = await transaction.get(codeRef);
+            if (!codeSnap.exists()) {
+                throw new Error("❌ Mã không tồn tại.");
+            }
+
+            const codeData = codeSnap.data();
+            if (codeData.used) {
+                throw new Error("❌ Mã đã được sử dụng.");
+            }
+
+            const userDoc = await transaction.get(userDocRef);
+            const currentSilver = userDoc.data().silver || 0;
+            const newSilver = currentSilver + codeData.value;
+
+            // ✅ Đánh dấu mã đã dùng
+            transaction.update(codeRef, {
+                used: true,
+                usedBy: userId,
+                usedAt: serverTimestamp()
+            });
+
+            // ✅ Cộng bạc vào tài khoản
+            transaction.update(userDocRef, {
+                silver: newSilver
+            });
+
+            // ✅ Cập nhật dữ liệu local
+            if (!window.playerData) window.playerData = {};
+            window.playerData.silver = newSilver;
+
+            codeOutputDiv.textContent = `✅ Nạp thành công ${formatCurrency(codeData.value)} bạc!`;
+        });
+    } catch (error) {
+        codeOutputDiv.textContent = "❌ " + error.message;
+        console.error("Lỗi khi nạp mã:", error);
+    } finally {
+        codeInput.value = "";
+        updateUI();
+    }
+};
+
+        window.handleWithdrawCode = async () => {
+    const val = parseInt(codeInputWithdraw.value.trim());
+    const minWithdrawal = 30000;
+    const userDocRef = doc(db, "users", userId);
+
+    if (isNaN(val) || val < minWithdrawal) {
+        codeOutputDiv.textContent = `❌ Số vàng rút không hợp lệ. Tối thiểu là ${formatCurrency(minWithdrawal)} vàng.`;
+        return;
+    }
+
+    try {
+        let success = false;
+        let attempts = 0;
+        const maxRetries = 5;
+
+        while (!success && attempts < maxRetries) {
+            attempts++;
+            let newCodeId = "NAP-" + Math.random().toString(36).substring(2, 8).toUpperCase();
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const userDoc = await transaction.get(userDocRef);
+                    if (!userDoc.exists()) throw new Error("Không tìm thấy dữ liệu người dùng.");
+
+                    const userData = userDoc.data();
+                    const currentGold = Number(userData.gold || 0);
+
+                    if (currentGold < val) throw new Error("Không đủ vàng để rút!");
+
+                    const codeDocRef = doc(db, "public_codes", newCodeId);
+                    const codeCheck = await transaction.get(codeDocRef);
+                    if (codeCheck.exists()) throw new Error("Mã đã tồn tại, thử lại...");
+
+                    // ✅ Trừ vàng (ép kiểu)
+                    transaction.update(userDocRef, {
+                        gold: currentGold - val
+                    });
+
+                    // ✅ Tạo mã rút
+                    transaction.set(codeDocRef, {
+                        value: val,
+                        used: false,
+                        generatedBy: userId,
+                        timestamp: serverTimestamp()
+                    });
+
+                    codeOutputDiv.textContent = `✅ Mã nạp đã được tạo: ${newCodeId}. Gửi mã này để nạp ${formatCurrency(val)} vàng.`;
+                    success = true;
+                });
+            } catch (innerError) {
+                if (innerError.message.includes("Mã đã tồn tại")) {
+                    console.warn(innerError.message);
+                } else {
+                    throw innerError;
+                }
+            }
+        }
+
+        if (!success) {
+            codeOutputDiv.textContent = "❌ Không thể tạo mã sau nhiều lần thử. Vui lòng thử lại.";
+        }
+    } catch (e) {
+        codeOutputDiv.textContent = "❌ " + e.message;
+        console.error("Lỗi tạo mã rút:", e);
+    } finally {
+        codeInputWithdraw.value = "";
+        updateUI();
+    }
+};
+
+        // --- UI Toggling and Navigation Functions ---
+
+        function hideAllViews() {
+            const views = [farmView, inventoryView, gameZoneView, accountView, shopView, codeView];
+            views.forEach(view => view.style.display = "none");
+            seedSelect.style.display = "none";
+            animalPlace.style.display = "none"; // Hide animal place modal
+        }
+
+        window.showView = (viewId) => {
+            hideAllViews();
+            const targetView = document.getElementById(viewId);
+            if (targetView) {
+                targetView.style.display = "block";
+                switch(viewId) {
+                    case 'farmView':
+                        // Default to crop farm when opening farm view
+                        changeFarmCategory('crop');
+                        // Hide the land info specific to farm view since it's now in shop
+                        landInfo.style.display = 'none';
+                        break;
+                    case 'inventoryView':
+                        renderInventory();
+                        break;
+                    case 'gameZoneView': // Renamed
+                        renderGameZoneUI();
+                        break;
+                    case 'accountView':
+                        renderAccountUI();
+                        break;
+                    case 'shopView':
+                        renderShop('seed'); // Default to seed category
+                        break;
+                    case 'codeView':
+                        showDepositSection();
+                        break;
+                }
+                updateUI();
+            }
+        };
+
+        window.toggleSeed = (show) => {
+            seedSelect.style.display = show ? "flex" : "none"; // Changed to flex for proper centering
+        };
+
+        window.toggleAnimalPlace = (show) => {
+            animalPlace.style.display = show ? "flex" : "none"; // Changed to flex for proper centering
+        };
+
+        // Function to handle shop category button clicks
+        window.changeShopCategory = (category) => {
+            renderShop(category);
+        };
+    </script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #e0ffe0;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            color: #333;
+            font-size: 16px;
+        }
+
+        /* --- Global / Utility Styles --- */
+        .hidden { display: none !important; }
+        .btn {
+            padding: 10px 15px;
+            font-size: 1em;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.15);
+        }
+        .btn:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .btn:disabled {
+            background-color: #ccc !important;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            opacity: 0.7; /* Indicate disabled state more clearly */
+        }
+        .btn-primary { background-color: #4CAF50; }
+        .btn-primary:hover { background-color: #45a049; }
+        .btn-info { background-color: #007bff; }
+        .btn-info:hover { background-color: #0056b3; }
+        .btn-danger { background-color: #f44336; }
+        .btn-danger:hover { background-color: #da190b; }
+        .btn-secondary { background-color: #6c757d; }
+        .btn-secondary:hover { background-color: #5a6268; }
+        .btn-small { padding: 5px 10px; font-size: 0.85em; border-radius: 5px; }
+        .btn-small.green { background-color: #28a745; }
+        .btn-small.green:hover { background-color: #218838; }
+        .btn-small.red { background-color: #dc3545; }
+        .btn-small.red:hover { background-color: #c82333; }
+
+
+        /* --- Auth Screen --- */
+        #authScreen {
+            position: fixed; inset: 0; background: linear-gradient(to bottom right, #e0ffe0, #c0e0c0); display: flex; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 999;
+        }
+        #authScreen h2 { color: #4CAF50; margin-bottom: 25px; }
+        #authScreen input {
+            margin-bottom: 15px; padding: 12px; width: 280px; border: 1px solid #ccc; border-radius: 8px; font-size: 1em;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+        }
+        #authScreen button { margin-bottom: 10px; width: 280px; }
+        #authMessage { /* New style for auth messages */
+            color: #f44336;
+            margin-top: -10px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+            text-align: center;
+        }
+
+
+        /* --- Top Bar --- */
+        #topBar {
+            display: flex;
+            justify-content: flex-end; /* Align items to the right */
+            align-items: center;
+            padding: 8px 15px; /* Adjusted padding to be smaller */
+            background: #4CAF50;
+            color: white;
+            font-size: 1em;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            flex-shrink: 0;
+        }
+        #topBar .player-info { /* Removed, kept for reference if needed later */
+            display: none;
+        }
+        #topBar .currency-group {
+            display: flex;
+            gap: 8px; /* Adjusted gap to be smaller */
+            font-weight: bold;
+            font-size: 0.85em; /* Slightly smaller font for currencies */
+        }
+        #topBar .currency-item {
+            display: flex;
+            align-items: center;
+            background-color: rgba(0,0,0,0.15);
+            padding: 3px 7px; /* Adjusted padding to be smaller */
+            border-radius: 5px; /* Slightly smaller border radius */
+            white-space: nowrap;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+        }
+        #topBar .currency-item span {
+            margin-left: 5px; /* Adjusted margin */
+            font-weight: normal;
+        }
+        #topBar .currency-item::before {
+            font-size: 1.1em; /* Slightly smaller icon */
+            margin-right: 3px; /* Adjusted margin */
+            position: relative;
+            top: 1px;
+        }
+        #topBar .currency-item:first-child::before {
+            content: '🪙';
+        }
+        #topBar .currency-item:last-child::before {
+            content: '💰';
+        }
+
+
+        /* --- Main Content Area --- */
+        #mainContent {
+            flex-grow: 1;
+            padding: 10px;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            display: flex;
+            justify-content: center; /* Center views horizontally */
+        }
+        .game-view {
+            display: none;
+            padding: 20px; /* Increased padding */
+            background-color: #f9fff9;
+            border-radius: 12px; /* Slightly larger border-radius */
+            box-shadow: 0 6px 15px rgba(0,0,0,0.15); /* Stronger shadow */
+            margin: 15px auto; /* Adjusted margin */
+            max-width: 650px; /* Default max-width for game views */
+            width: 100%; /* Ensure it takes full width up to max-width */
+            box-sizing: border-box; /* Include padding in width */
+        }
+        .game-view h3 {
+            color: #2e8b57;
+            text-align: center;
+            margin-bottom: 25px; /* Increased margin */
+            font-size: 1.8em; /* Larger font size */
+            font-weight: bold;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.05);
+        }
+        .game-view p {
+            text-align: center;
+            margin-bottom: 15px;
+            line-height: 1.4;
+        }
+        .game-view .action-buttons {
+            text-align: center;
+            margin-top: 25px; /* Increased margin */
+        }
+        .game-view .action-buttons .btn {
+            margin: 8px; /* Adjusted margin */
+        }
+        .placeholder-text {
+            color: #888;
+            font-style: italic;
+            text-align: center;
+            padding: 20px;
+            border: 1px dashed #e0e0e0;
+            border-radius: 8px;
+            background-color: #fafafa;
+        }
+         .placeholder-text-small {
+            font-size: 0.9em;
+            color: #999;
+            font-style: italic;
+            text-align: center;
+            padding: 10px;
+        }
+
+        /* --- Farm View (UPDATED FOR TABS) --- */
+        #farmCategories {
+            display: flex;
+            justify-content: center;
+            gap: 15px; /* Increased gap */
+            margin-bottom: 25px; /* Increased margin */
+            flex-wrap: wrap;
+        }
+        .farm-category-button {
+            padding: 10px 20px; /* Increased padding */
+            border: 2px solid #4CAF50;
+            border-radius: 25px; /* More rounded */
+            background-color: #fff;
+            color: #4CAF50;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .farm-category-button:hover {
+            background-color: #e0ffe0;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        .farm-category-button.active {
+            background-color: #4CAF50;
+            color: white;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+            border-color: #4CAF50;
+        }
+
+        #cropFarmGrid {
+            display: grid; /* Default to grid for crop view */
+            grid-template-columns: repeat(auto-fit, minmax(85px, 1fr)); /* Slightly larger tiles */
+            gap: 10px; /* Increased gap */
+            justify-content: center;
+            padding: 15px; /* Increased padding */
+            margin: 0 auto;
+            max-width: 400px; /* Adjusted max-width */
+            background-color: #f0fff0;
+            border-radius: 10px;
+            box-shadow: inset 0 0 8px rgba(0,0,0,0.1);
+        }
+        .tile.crop-tile { /* Specific style for crop tiles */
+            width: 85px; /* Slightly larger tiles */
+            height: 85px; /* Slightly larger tiles */
+            border-radius: 12px; /* More rounded */
+            border: 2px solid #a0a0a0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            cursor: pointer;
+            background: #d2b48c; /* Earthy brown */
+            flex-direction: column;
+            text-align: center;
+            color: #333;
+            font-weight: bold;
+            font-size: 2.2em; /* Adjusted font size for emoji */
+            transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.1s ease;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .tile.crop-tile:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        .tile small.tile-info {
+            position: absolute;
+            bottom: 2px; /* Reduced bottom spacing */
+            font-size: 0.6em; /* Smaller font size for info */
+            color: #555;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            width: 90%; /* Adjusted width */
+            background-color: rgba(255, 255, 255, 0.85); /* More opaque */
+            padding: 1px 3px; /* Reduced padding */
+            border-radius: 4px; /* More rounded */
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .tile.locked {
+            background: #bdbdbd; /* Lighter gray for locked */
+            border-color: #9e9e9e;
+            cursor: not-allowed;
+            color: #555;
+            font-size: 16px; /* Larger font for "Khóa" */
+            text-transform: uppercase;
+            justify-content: center;
+            align-items: center;
+            box-shadow: inset 0 0 5px rgba(0,0,0,0.1);
+        }
+        .tile.locked span { display: block; }
+        .tile.planted { background: #9acd32; /* Lime green */ }
+        .tile.grown { background: #3cb371; /* Medium sea green */ color: white; }
+
+        #animalFarmArea { /* New area for animals */
+            display: none; /* Hidden by default */
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: flex-start;
+            gap: 15px; /* Increased gap */
+            padding: 15px; /* Increased padding */
+            min-height: 200px; /* Adjusted height */
+            border: 2px dashed #b0d8b0; /* Lighter dashed border */
+            border-radius: 12px;
+            background-color: #f0fff0;
+            box-shadow: inset 0 0 8px rgba(0,0,0,0.05);
+        }
+        .animal-item {
+            width: 95px; /* Larger width */
+            height: 110px; /* Larger height to accomodate button */
+            background-color: #ffffff;
+            border: 2px solid #5cb85c;
+            border-radius: 12px; /* More rounded */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.2em; /* Adjusted font size for emoji to match crop tiles */
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            text-align: center;
+            padding: 5px; /* Increased padding */
+            box-sizing: border-box;
+            gap: 4px;
+        }
+        .animal-item:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.18);
+        }
+        .animal-item span {
+            font-size: 0.7em; /* Adjusted text size */
+            color: #333;
+            font-weight: bold;
+            line-height: 1.2;
+        }
+        .animal-item small.animal-info {
+            font-size: 0.5em; /* Smaller font for timer, even more */
+            color: #666;
+            line-height: 1.2;
+            padding: 1px 3px; /* Reduced padding */
+            background-color: rgba(255, 255, 255, 0.85); /* Consistent background */
+            border-radius: 4px;
+        }
+        .animal-item.ready-to-collect {
+            background-color: #d4edda;
+            border-color: #28a745;
+            box-shadow: 0 4px 12px rgba(40,167,69,0.25);
+        }
+        .add-animal-btn {
+            border: 2px dashed #a0a0a0; /* Darker dashed border */
+            background-color: #f8f8f8;
+            font-size: 24px; /* Larger plus sign */
+            color: #777;
+            line-height: 1.1;
+        }
+        .add-animal-btn span {
+            font-size: 0.9em; /* Larger text for "Thêm vật nuôi" */
+        }
+        .animal-item.locked { /* Style for locked animal spots */
+            background: #bdbdbd;
+            border-color: #9e9e9e;
+            cursor: not-allowed;
+            color: #555;
+            font-size: 16px;
+            text-transform: uppercase;
+            justify-content: center;
+            align-items: center;
+            box-shadow: inset 0 0 5px rgba(0,0,0,0.1);
+            flex-direction: column;
+            gap: 5px;
+        }
+        .animal-item.locked small {
+            font-size: 0.7em;
+            color: #666;
+            text-transform: none;
+            text-align: center;
+            line-height: 1.3;
+        }
+
+
+        /* --- Inventory View --- */
+        #inventoryItems {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); /* Slightly larger minmax */
+            gap: 20px; /* Increased gap */
+            padding: 15px; /* Increased padding */
+            text-align: center;
+        }
+        .inventory-item {
+            background-color: white;
+            border: 1px solid #e0e0e0; /* Lighter border */
+            border-radius: 10px;
+            padding: 15px; /* Increased padding */
+            box-shadow: 0 4px 10px rgba(0,0,0,0.08); /* Stronger shadow */
+            font-size: 0.95em; /* Slightly larger font */
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .inventory-item:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.12);
+        }
+        .inventory-item .item-name { font-weight: bold; font-size: 1.2em; margin-bottom: 8px; color: #333; }
+        .inventory-item .item-quantity { color: #555; font-weight: bold; }
+        .inventory-item .item-details { font-size: 0.85em; color: #777; margin-top: 8px; line-height: 1.3; }
+
+        /* --- Game Zone View (NEW - Replaced Friends) --- */
+        #gameZoneView h4 { margin-top: 25px; color: #2e8b57; border-bottom: 1px solid #eee; padding-bottom: 5px; text-align: left;}
+        .mini-game-list {
+            display: flex;
+            flex-direction: column;
+            gap: 20px; /* Increased gap */
+            padding: 15px 0;
+        }
+        .mini-game-item {
+            background-color: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 20px; /* Increased padding */
+            box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+            text-align: center;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .mini-game-item:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.12);
+        }
+        .mini-game-item h4 {
+            font-size: 1.3em; /* Larger font */
+            color: #007bff;
+            margin-bottom: 12px; /* Increased margin */
+            border-bottom: none;
+            text-align: center;
+        }
+        .mini-game-item p {
+            font-size: 0.95em; /* Slightly larger font */
+            color: #555;
+            margin-bottom: 18px; /* Increased margin */
+        }
+        .mini-game-item button {
+            width: 70%; /* Adjusted width */
+            max-width: 220px; /* Increased max-width */
+        }
+
+
+        /* --- Account View --- */
+        #accountView .account-info-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center; /* Vertically align items */
+            padding: 12px 0; /* Increased padding */
+            border-bottom: 1px dashed #e0e0e0; /* Lighter dashed border */
+            font-size: 1.15em; /* Slightly larger font */
+        }
+        #accountView .account-info-item:last-child { border-bottom: none; }
+        #accountView .account-info-item strong { color: #007bff; font-weight: bold; }
+        #accountView .logout-btn { margin-top: 30px; /* Increased margin */ }
+
+        /* --- Shop View --- */
+        #shopView h3 { margin-bottom: 20px; }
+        #shopCategories {
+            display: flex;
+            justify-content: center;
+            gap: 15px; /* Increased gap */
+            margin-bottom: 25px; /* Increased margin */
+            flex-wrap: wrap;
+        }
+        .shop-category-button {
+            padding: 10px 20px; /* Increased padding */
+            border: 2px solid #4CAF50;
+            border-radius: 25px; /* More rounded */
+            background-color: #fff;
+            color: #4CAF50;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .shop-category-button:hover {
+            background-color: #e0ffe0;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        .shop-category-button.active {
+            background-color: #4CAF50;
+            color: white;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+            border-color: #4CAF50;
+        }
+
+        #shopItems {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); /* Adjusted minmax for better fit */
+            gap: 20px; /* Increased gap */
+            padding: 15px; /* Increased padding */
+            justify-content: center;
+        }
+        @media (min-width: 700px) {
+            #shopItems {
+                grid-template-columns: repeat(3, 1fr);
+            }
+            .game-view {
+                max-width: 750px; /* Increased max-width */
+            }
+        }
+        @media (min-width: 900px) {
+             #shopItems {
+                grid-template-columns: repeat(4, 1fr);
+            }
+            .game-view {
+                max-width: 1000px; /* Increased max-width */
+            }
+        }
+
+        .shop-item {
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 12px; /* More rounded */
+            padding: 18px; /* Increased padding */
+            box-shadow: 0 6px 15px rgba(0,0,0,0.1); /* Stronger shadow */
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            min-height: 220px; /* Adjusted min-height for better consistency */
+            box-sizing: border-box;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .shop-item:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.15);
+        }
+        .shop-item .item-name {
+            font-weight: bold;
+            font-size: 1.3em; /* Larger font */
+            margin-bottom: 10px; /* Increased margin */
+            color: #2e8b57;
+            flex-shrink: 0;
+        }
+        .shop-item .item-requirements, .shop-item .item-details {
+            font-size: 0.95em; /* Slightly larger font */
+            color: #666;
+            margin-bottom: 12px; /* Increased margin */
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            text-align: center;
+            line-height: 1.4;
+        }
+        .shop-item .item-inventory {
+            font-size: 0.85em; /* Slightly larger font */
+            color: #888;
+            margin-top: 8px; /* Increased margin */
+            flex-shrink: 0;
+            font-weight: bold;
+        }
+        .shop-item button {
+            width: 100%;
+            padding: 10px 12px; /* Increased padding */
+            font-size: 1em; /* Larger font size for button text */
+            background-color: #28a745;
+            margin-top: auto;
+            border-radius: 8px; /* More rounded */
+        }
+        .shop-item button:hover { background-color: #218838; }
+
+        /* --- Code View --- */
+        #codeView .code-actions-btns {
+            display: flex;
+            justify-content: center;
+            gap: 15px; /* Increased gap */
+            margin-bottom: 25px; /* Increased margin */
+            flex-wrap: wrap;
+        }
+        #codeView .code-actions-btns button {
+            flex-grow: 1;
+            max-width: 180px; /* Increased max-width */
+            background-color: #007bff;
+            padding: 12px 18px; /* Increased padding */
+            font-size: 1.05em; /* Slightly larger font */
+            border-radius: 10px; /* More rounded */
+        }
+        #codeView .code-actions-btns button.active {
+            background-color: #0056b3;
+            border: 2px solid #004085;
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);
+        }
+
+        #codeView .code-section {
+            display: none;
+            text-align: center;
+            padding: 15px; /* Increased padding */
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            background-color: #fcfcfc;
+            margin-bottom: 20px;
+            box-shadow: inset 0 0 5px rgba(0,0,0,0.05);
+        }
+        #codeView input[type="text"], #codeView input[type="number"] {
+            width: 90%; /* Wider input fields */
+            max-width: 350px; /* Increased max-width */
+            padding: 12px; /* Increased padding */
+            border-radius: 8px; /* More rounded */
+            border: 1px solid #ccc;
+            margin-bottom: 20px; /* Increased margin */
+            text-align: center;
+            font-size: 1em;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+        }
+        #codeOutput {
+            margin-top: 25px; /* Increased margin */
+            padding: 15px; /* Increased padding */
+            background-color: #e9f5e9; /* Lighter green background */
+            border-radius: 8px;
+            min-height: 50px; /* Taller output area */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: #2e8b57; /* Green text */
+            word-break: break-all;
+            border: 1px solid #d4edda;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+
+        /* --- Seed Select Modal (Floating Popup) --- */
+        #seedSelect {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: white;
+            padding: 25px; /* Increased padding */
+            border-radius: 15px; /* More rounded */
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4); /* Stronger shadow */
+            z-index: 20;
+            display: none;
+            max-width: 400px; /* Increased max-width */
+            width: 90%;
+            text-align: center;
+            max-height: 85vh; /* Larger max height */
+            flex-direction: column;
+            justify-content: space-between;
+            box-sizing: border-box;
+        }
+        #seedSelect h4 {
+            color: #2e8b57;
+            margin-bottom: 20px; /* Increased margin */
+            font-size: 1.5em; /* Larger font */
+            font-weight: bold;
+        }
+        #seedOptions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 15px; /* Increased gap */
+            overflow-y: auto;
+            max-height: calc(85vh - 120px); /* Adjusted max-height */
+            padding-right: 8px; /* Increased padding */
+        }
+        #seedOptions button {
+            flex: 1 1 calc(50% - 20px); /* Adjusted flex basis */
+            min-width: 140px; /* Increased min-width */
+            padding: 15px 10px; /* Increased padding */
+            font-size: 1.05em; /* Slightly larger font */
+            border: 1px solid #ddd;
+            border-radius: 10px; /* More rounded */
+            background-color: #f5f5f5; /* Lighter background */
+            cursor: pointer;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        #seedOptions button:hover:not(:disabled) {
+            background-color: #e0e0e0;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        #seedOptions button:disabled { background-color: #ccc; cursor: not-allowed; color: #888; opacity: 0.7; }
+        #seedSelect .close-btn {
+            margin-top: 20px; /* Increased margin */
+            background-color: #6c757d;
+            color: white;
+            width: 100%;
+            padding: 12px 15px; /* Adjusted padding */
+            border-radius: 10px; /* More rounded */
+        }
+        #seedSelect .close-btn:hover { background-color: #5a6268; }
+
+
+        /* --- Animal Place Modal (NEW) --- */
+        #animalPlace {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: white;
+            padding: 25px; /* Increased padding */
+            border-radius: 15px; /* More rounded */
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4); /* Stronger shadow */
+            z-index: 20;
+            display: none;
+            max-width: 400px; /* Increased max-width */
+            width: 90%;
+            text-align: center;
+            max-height: 85vh; /* Larger max height */
+            flex-direction: column;
+            justify-content: space-between;
+            box-sizing: border-box;
+        }
+        #animalPlace h4 {
+            color: #2e8b57;
+            margin-bottom: 20px; /* Increased margin */
+            font-size: 1.5em; /* Larger font */
+            font-weight: bold;
+        }
+        #animalOptions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 15px; /* Increased gap */
+            overflow-y: auto;
+            max-height: calc(85vh - 120px); /* Adjusted max-height */
+            padding-right: 8px; /* Increased padding */
+        }
+        #animalOptions button {
+            flex: 1 1 calc(50% - 20px); /* Adjusted flex basis */
+            min-width: 140px; /* Increased min-width */
+            padding: 15px 10px; /* Increased padding */
+            font-size: 1.05em; /* Slightly larger font */
+            border: 1px solid #ddd;
+            border-radius: 10px; /* More rounded */
+            background-color: #f5f5f5; /* Lighter background */
+            cursor: pointer;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        #animalOptions button:hover:not(:disabled) {
+            background-color: #e0e0e0;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        #animalOptions button:disabled { background-color: #ccc; cursor: not-allowed; color: #888; opacity: 0.7; }
+        #animalPlace .close-btn {
+            margin-top: 20px; /* Increased margin */
+            background-color: #6c757d;
+            color: white;
+            width: 100%;
+            padding: 12px 15px; /* Adjusted padding */
+            border-radius: 10px; /* More rounded */
+        }
+        #animalPlace .close-btn:hover { background-color: #5a6268; }
+
+
+        /* --- Navbar (Bottom) --- */
+        #navbar {
+            display: flex;
+            justify-content: space-around;
+            background: #4CAF50;
+            padding: 12px 0; /* Increased padding */
+            box-shadow: 0 -4px 10px rgba(0,0,0,0.25); /* Stronger shadow */
+            flex-shrink: 0;
+            width: 100%;
+            position: sticky;
+            bottom: 0;
+            z-index: 10;
+        }
+        #navbar button {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 0.95em; /* Slightly larger font */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 8px 0; /* Increased padding */
+            cursor: pointer;
+            transition: color 0.2s ease, transform 0.1s ease;
+            flex: 1;
+            font-weight: 500;
+        }
+        #navbar button span {
+            margin-top: 4px; /* Increased margin */
+            font-size: 0.9em; /* Smaller text for label */
+        }
+        #navbar button:hover {
+            color: #f0f0f0;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div id="authScreen">
+        <h2>Đăng nhập Mini Farm</h2>
+        <input id="email" type="email" placeholder="Email" />
+        <input id="password" type="password" placeholder="Mật khẩu" />
+        <button onclick="signUp()" class="btn btn-primary">Đăng ký</button>
+        <button onclick="signIn()" class="btn btn-primary">Đăng nhập</button>
+        <p id="authMessage" style="color:red;"></p> </div>
+
+    <div id="topBar">
+        <div class="currency-group">
+            <div class="currency-item">Bạc: <span id="silver">0</span></div>
+            <div class="currency-item">Vàng: <span id="gold">0</span></div>
+        </div>
+    </div>
+
+    <div id="mainContent">
+        <div id="farmView" class="game-view">
+            <h3>🌱 Nông trại của bạn</h3>
+            <div id="farmCategories">
+                <button class="farm-category-button active" data-category="crop" onclick="changeFarmCategory('crop')">Khu trồng trọt</button>
+                <button class="farm-category-button" data-category="animal" onclick="changeFarmCategory('animal')">Khu chăn nuôi</button>
+            </div>
+            <div id="cropFarmGrid"></div>
+            <div id="animalFarmArea"></div>
+            <div class="action-buttons">
+                <p id="landInfo" style="text-align:center; font-size:0.9em; margin-bottom:10px; display:none;"></p>
+            </div>
+        </div>
+
+        <div id="inventoryView" class="game-view">
+            <h3>🎒 Kho đồ</h3>
+            <div id="inventoryItems">
+                </div>
+        </div>
+
+        <div id="gameZoneView" class="game-view">
+            <h3>🎮 Khu Trò Chơi</h3>
+            <div id="gameZoneContent">
+                </div>
+        </div>
+
+        <div id="accountView" class="game-view">
+            <h3>👤 Thông tin Tài khoản</h3>
+            <div class="account-info-item">
+                <span>Email:</span> <strong id="accountPlayerName"></strong>
+            </div>
+            <div class="account-info-item">
+                <span>ID Game:</span> <strong id="accountGameId"></strong>
+            </div>
+            <div class="account-info-item">
+                <span>Cấp độ:</span> <strong id="accountLevel"></strong>
+            </div>
+            <div class="account-info-item">
+                <span>XP:</span> <strong id="accountXP"></strong>
+            </div>
+            <div class="account-info-item">
+                <span>Bạc:</span> <strong id="accountSilver"></strong>
+            </div>
+            <div class="account-info-item">
+                <span>Vàng:</span> <strong id="accountGold"></strong> </div>
+            <div class="action-buttons">
+                 <button onclick="logout()" class="btn btn-danger logout-btn">🚪 Thoát tài khoản</button>
+            </div>
+        </div>
+
+        <div id="shopView" class="game-view">
+            <h3>🛒 Cửa hàng</h3>
+            <div id="shopCategories">
+                <button class="shop-category-button active" data-category="seed" onclick="changeShopCategory('seed')">Hạt giống</button>
+                <button class="shop-category-button" data-category="animal" onclick="changeShopCategory('animal')">Vật nuôi</button>
+                <button class="shop-category-button" data-category="special" onclick="changeShopCategory('special')">Đặc biệt</button>
+            </div>
+            <div id="shopItems">
+                </div>
+            </div>
+
+        <div id="codeView" class="game-view">
+            <h3>💳 Nạp / Rút</h3>
+
+            <div class="code-actions-btns" id="codeActions">
+                <button id="showDepositCodeBtn" onclick="showDepositSection()" class="btn btn-info active">1. Nạp Code</button>
+                <button id="showWithdrawCodeBtn" onclick="showWithdrawSection()" class="btn btn-info">2. Rút Code</button>
+            </div>
+
+            <div id="depositCodeSection" class="code-section">
+                <p>Nhập mã nạp (để nhận bạc):</p>
+                <input type="text" id="codeInputDeposit" placeholder="VD: NAP-ABCDEF" />
+                <div class="action-buttons">
+                    <button onclick="handleDepositCode()" class="btn btn-primary">Nạp</button>
+                </div>
+            </div>
+
+            <div id="withdrawCodeSection" class="code-section">
+                <p>Nhập số vàng muốn rút (để tạo code):</p>
+                <input type="number" id="codeInputWithdraw" placeholder="Tối thiểu 30000" />
+                <div class="action-buttons">
+                    <button onclick="handleWithdrawCode()" class="btn btn-primary">Tạo Mã Rút</button>
+                </div>
+            </div>
+
+            <div id="codeOutput"></div>
+        </div>
+    </div>
+
+    <div id="seedSelect">
+        <h4>Chọn giống để trồng</h4>
+        <div id="seedOptions"></div>
+        <button onclick="toggleSeed(false)" class="btn btn-secondary close-btn">Huỷ</button>
+    </div>
+
+    <div id="animalPlace">
+        <h4>Chọn vật nuôi để đặt</h4>
+        <div id="animalOptions"></div>
+        <button onclick="toggleAnimalPlace(false)" class="btn btn-secondary close-btn">Huỷ</button>
+    </div>
+
+    <div id="navbar">
+        <button onclick="showView('farmView')">
+            <span style="font-size: 24px;">🏡</span>
+            <span>Nông trại</span>
+        </button>
+        <button onclick="showView('inventoryView')">
+            <span style="font-size: 24px;">🎒</span>
+            <span>Kho đồ</span>
+        </button>
+        <button onclick="showView('gameZoneView')">
+            <span style="font-size: 24px;">🎮</span>
+            <span>Trò chơi</span>
+        </button>
+        <button onclick="showView('accountView')">
+            <span style="font-size: 24px;">👤</span>
+            <span>Tài khoản</span>
+        </button>
+        <button onclick="showView('shopView')">
+            <span style="font-size: 24px;">🛒</span>
+            <span>Cửa hàng</span>
+        </button>
+        <button onclick="showView('codeView')">
+            <span style="font-size: 24px;">💳</span>
+            <span>Nạp/Rút</span>
+        </button>
+    </div>
+
+</body>
+</html>
