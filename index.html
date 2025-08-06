@@ -1072,11 +1072,12 @@
         // --- Game Zone Functions (NEW - Replaced Friends) ---
         function renderGameZoneUI() {
             gameZoneContent.innerHTML = `
-                <p>Chào mừng đến Khu Trò Chơi! Tại đây bạn có thể tham gia các mini-game để kiếm thêm vàng và XP.</p>
+                <p>Chào mừng đến Khu Vườn! Tại đây bạn có thể nhận thông báo và tham gia các mini-game.</p>
                 <div class="mini-game-list">
                     <div class="mini-game-item">
-                        <h4>🔥 Đua Top Nông Dân</h4>
-                        <p>Thi đấu xem ai có năng suất cao nhất trong tuần. Phần thưởng hấp dẫn!</p>
+                        <h4>🔥 Bảng Thông Tin 📢</h4>
+                        <p>Rút Code Thấp Nhất 30k Vàng Để đổi thành code và nhận được bạc khi nhập code hoặc có thể đổi thành ATM MOMO với tỉ lệ 10:1</p>
+                        <p>Bạn có thể liên hệ Admin qua zalo 0934530156!!!</p>
                         <button class="btn btn-secondary" disabled>Sắp ra mắt</button>
                     </div>
                     <div class="mini-game-item">
@@ -2125,7 +2126,7 @@ window.handleDepositCode = async () => {
         </div>
 
         <div id="gameZoneView" class="game-view">
-            <h3>🎮 Khu Trò Chơi</h3>
+            <h3>⛱️ Khu Vườn</h3>
             <div id="gameZoneContent">
                 </div>
         </div>
@@ -2215,8 +2216,8 @@ window.handleDepositCode = async () => {
             <span>Kho đồ</span>
         </button>
         <button onclick="showView('gameZoneView')">
-            <span style="font-size: 24px;">🎮</span>
-            <span>Trò chơi</span>
+            <span style="font-size: 24px;">⛱️</span>
+            <span>Vườn</span>
         </button>
         <button onclick="showView('accountView')">
             <span style="font-size: 24px;">👤</span>
